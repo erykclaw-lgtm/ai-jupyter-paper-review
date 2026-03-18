@@ -1,0 +1,10 @@
+{
+  "ServerApp": {
+    "jpserver_extensions": {
+      "jupyter_paper_review": true
+    }
+  },
+  "KernelSpecManager": {
+    "default_kernel_name": "paper-review"
+  }
+}

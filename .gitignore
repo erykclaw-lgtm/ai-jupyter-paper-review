@@ -1,0 +1,39 @@
+# Build outputs
+lib/
+tsconfig.tsbuildinfo
+jupyter_paper_review/labextension/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Node
+node_modules/
+package-lock.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# User data (reviews, sessions)
+data/reviews/
+data/sessions/
+
+# Environment / secrets
+.env
+.env.*
+
+# Claude Code local settings
+.claude/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Yarn
+.yarn/cache/
+.yarn/install-state.gz
+.pnp.*

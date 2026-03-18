@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling>=1.5.0", "jupyterlab>=4.0.0,<5"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jupyter-paper-review"
+version = "0.1.0"
+description = "A JupyterLab extension for reviewing academic papers with Claude Code"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "jupyter_server>=2.0.0,<3",
+    "jupyterlab>=4.0.0,<5",
+    "tornado>=6.0",
+    "claude-agent-sdk>=0.1.0",
+]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/data"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"jupyter-config" = "etc/jupyter"
