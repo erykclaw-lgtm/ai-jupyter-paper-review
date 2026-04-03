@@ -200,6 +200,7 @@
   margin-right: 6px;
   vertical-align: middle;
   animation: pr-pulse 1.5s ease-in-out infinite;
+  will-change: opacity;
 }
 
 .pr-session-streaming-label {
@@ -430,6 +431,7 @@
   border-radius: 50%;
   animation: pr-spin 0.8s linear infinite;
   flex-shrink: 0;
+  will-change: transform;
 }
 
 @keyframes pr-spin {

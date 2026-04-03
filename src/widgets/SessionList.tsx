@@ -41,8 +41,8 @@ export function SessionList({
   useEffect(() => {
     loadSessions();
 
-    // Poll every 3 seconds to pick up streaming status changes
-    const interval = setInterval(loadSessions, 3000);
+    // Poll every 15 seconds to pick up streaming status changes
+    const interval = setInterval(loadSessions, 15000);
     return () => clearInterval(interval);
   }, [loadSessions]);
 

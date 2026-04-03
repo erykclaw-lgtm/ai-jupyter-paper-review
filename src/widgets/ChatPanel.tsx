@@ -16,6 +16,40 @@ interface Message {
   toolUses?: Array<{ tool: string; input: Record<string, unknown> }>;
 }
 
+const MessageList = React.memo(function MessageList({
+  messages,
+}: {
+  messages: Message[];
+}): React.ReactElement {
+  return (
+    <>
+      {messages.map((msg, idx) => (
+        <div key={idx} className={`pr-chat-message pr-chat-${msg.role}`}>
+          <div className="pr-chat-message-header">
+            {msg.role === 'user' ? 'You' : 'Claude'}
+          </div>
+          <div className="pr-chat-message-content">
+            {msg.role === 'assistant' ? (
+              <MarkdownRenderer content={msg.content} />
+            ) : (
+              <p>{msg.content}</p>
+            )}
+          </div>
+          {msg.toolUses && msg.toolUses.length > 0 && (
+            <div className="pr-chat-tools-used">
+              {msg.toolUses.map((tu, i) => (
+                <span key={i} className="pr-tool-badge">
+                  {tu.tool}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </>
+  );
+});
+
 interface ChatPanelProps {
   sessionId: string | null;
   model: string;
@@ -44,12 +78,26 @@ export function ChatPanel({
   const activeSessionRef = useRef<string | null>(sessionId);
   // Track accumulated text for cancel display
   const streamingTextRef = useRef('');
+  // rAF guard for batching text state updates
+  const textRafRef = useRef(0);
 
+  const scrollRafRef = useRef(0);
   const scrollToBottom = useCallback(() => {
-    const container = messagesContainerRef.current;
-    if (container) {
-      container.scrollTop = container.scrollHeight;
-    }
+    if (scrollRafRef.current) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = 0;
+      const container = messagesContainerRef.current;
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+  }, []);
+
+  // Clean up pending rAF on unmount
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -61,6 +109,7 @@ export function ChatPanel({
   useEffect(() => {
     return () => {
       localAbortRef.current?.abort();
+      if (textRafRef.current) cancelAnimationFrame(textRafRef.current);
     };
   }, []);
 
@@ -81,7 +130,13 @@ export function ChatPanel({
         case 'text':
           accText.current += event.text || '';
           streamingTextRef.current = accText.current;
-          setStreamingText(accText.current);
+          // Batch updates to once per animation frame (~60/sec) instead of every chunk
+          if (!textRafRef.current) {
+            textRafRef.current = requestAnimationFrame(() => {
+              textRafRef.current = 0;
+              setStreamingText(accText.current);
+            });
+          }
           break;
         case 'tool_use':
           if (event.tool) {
@@ -346,29 +401,7 @@ export function ChatPanel({
           </div>
         )}
 
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`pr-chat-message pr-chat-${msg.role}`}>
-            <div className="pr-chat-message-header">
-              {msg.role === 'user' ? 'You' : 'Claude'}
-            </div>
-            <div className="pr-chat-message-content">
-              {msg.role === 'assistant' ? (
-                <MarkdownRenderer content={msg.content} />
-              ) : (
-                <p>{msg.content}</p>
-              )}
-            </div>
-            {msg.toolUses && msg.toolUses.length > 0 && (
-              <div className="pr-chat-tools-used">
-                {msg.toolUses.map((tu, i) => (
-                  <span key={i} className="pr-tool-badge">
-                    {tu.tool}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
+        <MessageList messages={messages} />
 
         {isStreaming && (
           <div className="pr-chat-message pr-chat-assistant">

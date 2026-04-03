@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -300,18 +301,19 @@ def _notebook_to_latex(abs_path: str) -> tuple[str, dict]:
 
     nb = nbformat.read(abs_path, as_version=4)
 
-    # Strip leading "---" (horizontal rule) from markdown cells.
-    # Pandoc misinterprets a cell starting with "---" as YAML front matter,
-    # which causes a JSONDecodeError in the pandoc filter pipeline.
+    # Replace "---" horizontal rules with "***" in markdown cells.
+    # Pandoc misinterprets "---" as a YAML document separator, which
+    # causes a JSONDecodeError in the pandoc filter pipeline. "***"
+    # is an unambiguous horizontal rule that pandoc handles correctly.
     for cell in nb.cells:
-        if cell.cell_type == "markdown" and cell.source.startswith("---"):
-            cell.source = cell.source.lstrip("-").lstrip()
+        if cell.cell_type == "markdown":
+            cell.source = re.sub(
+                r"^---$", "***", cell.source, flags=re.MULTILINE
+            )
 
     exporter = LatexExporter()
     return exporter.from_notebook_node(nb)
 
-
-import re
 
 # LaTeX snippet injected right after \begin{document} to handle Unicode chars
 # that Latin Modern lacks (e.g. ✓ ✗). Tectonic uses XeTeX so fontspec is loaded.

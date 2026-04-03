@@ -25,8 +25,8 @@ export function NotebookList(): React.ReactElement {
 
   useEffect(() => {
     loadNotebooks();
-    // Refresh every 10 seconds in case Claude creates new notebooks
-    const interval = setInterval(loadNotebooks, 10000);
+    // Refresh every 30 seconds in case Claude creates new notebooks
+    const interval = setInterval(loadNotebooks, 30000);
     return () => clearInterval(interval);
   }, [loadNotebooks]);
 

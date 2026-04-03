@@ -377,8 +377,14 @@ async function downloadExport(
   });
 
   if (!response.ok) {
-    const data = await response.json();
-    throw new Error(data.error || `Export failed: HTTP ${response.status}`);
+    let message = `Export failed: HTTP ${response.status}`;
+    try {
+      const data = await response.json();
+      if (data.error) message = data.error;
+    } catch {
+      // Response body wasn't JSON — use the default message
+    }
+    throw new Error(message);
   }
 
   const blob = await response.blob();

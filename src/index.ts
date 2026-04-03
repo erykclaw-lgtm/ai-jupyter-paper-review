@@ -18,7 +18,7 @@ const COMMAND_ID = 'paper-review:open';
  * Poll interval (ms) for checking if open notebooks have been
  * modified on disk by Claude Code.
  */
-const FILE_POLL_INTERVAL = 2000;
+const FILE_POLL_INTERVAL = 5000;
 
 class PaperReviewWidget extends Widget {
   private _root: HTMLDivElement;

@@ -9,13 +9,19 @@ interface MarkdownRendererProps {
   content: string;
 }
 
-export function MarkdownRenderer({ content }: MarkdownRendererProps): React.ReactElement {
+// Stable plugin arrays — declared outside the component so they're created once
+const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REHYPE_PLUGINS = [rehypeKatex, rehypeHighlight];
+
+export const MarkdownRenderer = React.memo(function MarkdownRenderer({
+  content,
+}: MarkdownRendererProps): React.ReactElement {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex, rehypeHighlight]}
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
     >
       {content}
     </ReactMarkdown>
   );
-}
+});

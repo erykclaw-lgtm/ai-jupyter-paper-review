@@ -343,11 +343,55 @@ class ClaudeBridge:
             prompt = f"PAPER UNDER REVIEW: {session.paper_title}\n\n{prompt}"
         return prompt
 
+    @staticmethod
+    def _find_claude_cli() -> str | None:
+        """Find the claude CLI binary, checking common install locations."""
+        import shutil
+
+        # 1. Already on PATH?
+        found = shutil.which("claude")
+        if found:
+            return found
+
+        # 2. nvm installs (most common on macOS)
+        nvm_dir = os.environ.get("NVM_DIR", os.path.expanduser("~/.nvm"))
+        versions_dir = os.path.join(nvm_dir, "versions", "node")
+        if os.path.isdir(versions_dir):
+            # Pick the newest node version that has claude
+            for ver in sorted(os.listdir(versions_dir), reverse=True):
+                candidate = os.path.join(versions_dir, ver, "bin", "claude")
+                if os.path.exists(candidate):
+                    return candidate
+
+        # 3. Homebrew / system global
+        for p in ["/usr/local/bin/claude", "/opt/homebrew/bin/claude"]:
+            if os.path.exists(p):
+                return p
+
+        return None
+
     def _build_options(
         self, session: SessionInfo, resume_id: str | None = None
     ) -> ClaudeAgentOptions:
         """Build ClaudeAgentOptions for a session."""
         system_prompt = self._build_system_prompt(session)
+
+        # Resolve CLI path once
+        cli_path = self._find_claude_cli()
+        if cli_path:
+            _debug(f"  Using claude CLI at: {cli_path}")
+
+        # Ensure node is on PATH for the claude shim
+        env = {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"}
+        if cli_path:
+            cli_bin_dir = os.path.dirname(os.path.realpath(cli_path))
+            node_bin_dir = os.path.dirname(cli_bin_dir) if cli_bin_dir.endswith("/bin") else cli_bin_dir
+            node_bin = os.path.join(os.path.dirname(os.path.realpath(cli_path)), "..", "bin")
+            node_bin = os.path.normpath(node_bin)
+            if os.path.isdir(node_bin):
+                current_path = os.environ.get("PATH", "")
+                if node_bin not in current_path:
+                    env["PATH"] = f"{node_bin}:{current_path}"
 
         kwargs = dict(
             model=session.model,
@@ -358,8 +402,11 @@ class ClaudeBridge:
             include_partial_messages=True,
             max_turns=50,
             max_buffer_size=100 * 1024 * 1024,  # 100 MB — large notebooks exceed 1 MB default
-            env={"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"},
+            env=env,
         )
+
+        if cli_path:
+            kwargs["cli_path"] = cli_path
 
         if resume_id:
             kwargs["resume"] = resume_id
