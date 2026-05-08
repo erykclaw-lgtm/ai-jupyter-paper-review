@@ -432,6 +432,19 @@ class ClaudeBridge:
             or ("process" in msg and ("dead" in msg or "not running" in msg))
         )
 
+    @staticmethod
+    def _is_unresumable_error(err: Exception) -> bool:
+        """Return True if the error leaves the Claude session in an unknown
+        state and we should NOT try to resume it.
+
+        Covers stream idle timeouts (long tool use with no output),
+        dead processes, and connection errors.
+        """
+        if ClaudeBridge._is_dead_process_error(err):
+            return True
+        msg = str(err).lower()
+        return "timeout" in msg or "idle" in msg
+
     async def _get_or_create_client(
         self, session: SessionInfo, skip_resume: bool = False
     ) -> ClientEntry:
@@ -603,8 +616,26 @@ class ClaudeBridge:
     ) -> None:
         """Background coroutine that drives the SDK and feeds *stream*."""
         try:
+            # If there's prior conversation but no claude_session_id
+            # (e.g. cleared after a timeout or process death), inject
+            # conversation history so Claude has context.
+            actual_message = message
+            session = self.get_session(session_id)
+            if (
+                session
+                and not session.claude_session_id
+                and len(session.messages) > 1
+            ):
+                actual_message = self._build_history_context(
+                    session.messages, message
+                )
+                _debug(
+                    f"  Injecting {len(session.messages) - 1} prior msgs "
+                    f"as history context (no resume ID)"
+                )
+
             async for event in self.send_message(
-                session_id, message, model=model, _user_msg_persisted=True,
+                session_id, actual_message, model=model, _user_msg_persisted=True,
             ):
                 await stream.put(event)
         except _StaleResumeError:
@@ -628,6 +659,20 @@ class ClaudeBridge:
                 await stream.put({"type": "error", "error": str(retry_err)})
         except asyncio.CancelledError:
             _debug(f"  _run_stream_task cancelled for {session_id}")
+            # Persist partial assistant text so it's not lost on cancel
+            partial_text = stream.accumulated_text
+            if partial_text:
+                try:
+                    sess = self.get_session(session_id)
+                    if sess:
+                        sess.messages.append(
+                            {"role": "assistant", "content": partial_text}
+                        )
+                        sess.claude_session_id = None
+                        self._save_session(sess)
+                        _debug(f"  Saved {len(partial_text)} chars of partial text on cancel")
+                except Exception:
+                    _debug("  Failed to persist partial text on cancel")
             await stream.put({"type": "done", "partial": True})
         except Exception as e:
             _debug(f"  _run_stream_task error: {e}")
@@ -926,11 +971,12 @@ class ClaudeBridge:
             _debug(f"  SDK error: {type(e).__name__}: {e}")
             logger.exception("SDK error in Claude bridge")
             is_dead = self._is_dead_process_error(e)
+            unresumable = self._is_unresumable_error(e)
             # Persist partial work before yielding error.
-            # Clear claude_session_id for dead processes so next attempt
-            # doesn't try to resume a dead session.
+            # Clear claude_session_id for dead/timeout/unknown-state errors
+            # so next attempt starts fresh instead of resuming a broken session.
             session = self.get_session(session_id) or session
-            if is_dead:
+            if unresumable:
                 session.claude_session_id = None
             elif claude_session_id:
                 session.claude_session_id = claude_session_id
@@ -959,8 +1005,9 @@ class ClaudeBridge:
             _debug(f"  ERROR in Claude bridge: {type(e).__name__}: {e}")
             logger.exception("Error in Claude bridge")
             is_dead = self._is_dead_process_error(e)
+            unresumable = self._is_unresumable_error(e)
             session = self.get_session(session_id) or session
-            if is_dead:
+            if unresumable:
                 session.claude_session_id = None
             elif claude_session_id:
                 session.claude_session_id = claude_session_id
