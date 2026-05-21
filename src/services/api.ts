@@ -84,6 +84,18 @@ export interface StreamStatus {
   active_tools?: string[];
 }
 
+/** An image attachment reference persisted on a message. */
+export interface Attachment {
+  rel_path: string;
+  media_type: string;
+}
+
+/** A pasted image to send with a chat message (base64, no data: prefix). */
+export interface ChatImage {
+  data: string;
+  media_type: string;
+}
+
 export interface SessionDetail {
   session_id: string;
   claude_session_id: string | null;
@@ -92,7 +104,7 @@ export interface SessionDetail {
   model: string;
   system_prompt: string;
   created_at: string;
-  messages: Array<{ role: string; content: string }>;
+  messages: Array<{ role: string; content: string; attachments?: Attachment[] }>;
 }
 
 export interface ModelInfo {
@@ -115,7 +127,8 @@ export async function* streamChat(
   sessionId: string,
   message: string,
   model?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  images?: ChatImage[]
 ): AsyncGenerator<StreamEvent> {
   const settings = getSettings();
   const url = apiUrl('chat');
@@ -127,6 +140,7 @@ export async function* streamChat(
       session_id: sessionId,
       message,
       model,
+      images: images && images.length > 0 ? images : undefined,
     }),
     signal,
   });
@@ -398,6 +412,20 @@ async function downloadExport(
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Build a URL for fetching a saved attachment (image), including the auth
+ * token as a query param so it can be used directly as an <img> src.
+ */
+export function attachmentUrl(relPath: string): string {
+  const settings = getSettings();
+  const segments = relPath.split('/').map(encodeURIComponent).join('/');
+  let url = apiUrl(`attachments/${segments}`);
+  if (settings.token) {
+    url += `?token=${encodeURIComponent(settings.token)}`;
+  }
+  return url;
 }
 
 export function exportPdf(path: string): Promise<void> {

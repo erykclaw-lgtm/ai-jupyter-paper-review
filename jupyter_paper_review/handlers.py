@@ -16,6 +16,12 @@ from tornado import web
 from .claude_bridge import ClaudeBridge
 from .session_manager import SessionManager
 
+try:
+    from .codex_bridge import CODEX_AVAILABLE, CodexBridge
+except ImportError:
+    CODEX_AVAILABLE = False
+    CodexBridge = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,13 +29,128 @@ def _debug(msg: str):
     """Write debug messages to stderr so they always show up in server output."""
     print(f"[paper-review] {msg}", file=sys.stderr, flush=True)
 
-# Singleton bridge instance
-_bridge: ClaudeBridge | None = None
+
+def _is_codex_model(model: str | None) -> bool:
+    """Return True if *model* should be served by the Codex bridge."""
+    if not model:
+        return False
+    m = model.lower()
+    # GPT-5 family (incl. gpt-5-codex variants) is what the Codex SDK accepts.
+    # See https://developers.openai.com/codex/sdk
+    return m.startswith("gpt-")
+
+
+class BridgeRouter:
+    """Dispatches calls to the right provider bridge based on session model.
+
+    Exposes the same public surface as ClaudeBridge so the handlers don't
+    care which provider is behind a given session. Both bridges share the
+    same on-disk session JSON format, so sessions are visible regardless
+    of which provider created them.
+    """
+
+    def __init__(self, data_dir: str, server_root: str):
+        self.data_dir = data_dir
+        self.server_root = server_root
+        self.claude = ClaudeBridge(data_dir, server_root=server_root)
+        # Codex is lazy — only instantiate when first needed, so a missing
+        # openai-codex install doesn't break the Claude flow.
+        self._codex: "CodexBridge | None" = None
+        # ClaudeBridge handles disk layout (reviews_dir, sessions_dir)
+        self.reviews_dir = self.claude.reviews_dir
+
+    @property
+    def codex(self) -> "CodexBridge":
+        if self._codex is None:
+            if not CODEX_AVAILABLE:
+                raise RuntimeError(
+                    "openai-codex SDK not installed — cannot use GPT/Codex models."
+                )
+            self._codex = CodexBridge(self.data_dir, server_root=self.server_root)
+        return self._codex
+
+    def _bridge_for_model(self, model: str | None):
+        return self.codex if _is_codex_model(model) else self.claude
+
+    def _bridge_for_session(self, session_id: str):
+        # Look at the session's persisted model to decide. Use claude's
+        # JSON reader (both bridges read the same files).
+        sess = self.claude.get_session(session_id)
+        if sess and _is_codex_model(sess.model):
+            return self.codex
+        return self.claude
+
+    # ---- pass-through to the right bridge ----
+    async def start_message(self, session_id, message, model=None, images=None):
+        bridge = self._bridge_for_model(model) if model else self._bridge_for_session(session_id)
+        return await bridge.start_message(session_id, message, model=model, images=images)
+
+    async def subscribe(self, session_id, from_index=0):
+        bridge = self._bridge_for_session(session_id)
+        async for event in bridge.subscribe(session_id, from_index):
+            yield event
+
+    def get_stream_status(self, session_id):
+        # Check both bridges — only one will have an active stream
+        for b in (self.claude, self._codex) if self._codex else (self.claude,):
+            status = b.get_stream_status(session_id)
+            if status.get("active") or status.get("event_count", 0) > 0:
+                return status
+        return {"active": False, "event_count": 0}
+
+    async def cancel_session(self, session_id):
+        bridge = self._bridge_for_session(session_id)
+        return await bridge.cancel_session(session_id)
+
+    async def shutdown(self):
+        await self.claude.shutdown()
+        if self._codex is not None:
+            await self._codex.shutdown()
+
+    # Session storage — delegated to ClaudeBridge (single source of truth).
+    # Both bridges read/write the same files; routing them through one keeps
+    # behavior consistent.
+    def get_session(self, session_id):
+        return self.claude.get_session(session_id)
+
+    def _save_session(self, session):
+        return self.claude._save_session(session)
+
+    def create_session(self, paper_url=None, model="claude-sonnet-4-6"):
+        return self.claude.create_session(paper_url=paper_url, model=model)
+
+    def list_sessions(self):
+        # ClaudeBridge.list_sessions inspects _streams to mark active.
+        # We need to merge in codex's active streams too.
+        sessions = self.claude.list_sessions()
+        if self._codex is not None:
+            for s in sessions:
+                stream = self._codex._streams.get(s["session_id"])
+                if stream and not stream.done:
+                    s["streaming"] = True
+        return sessions
+
+    async def delete_session(self, session_id):
+        # Try to clean up state in both bridges, but the file lives once.
+        if self._codex is not None:
+            try:
+                task = self._codex._stream_tasks.pop(session_id, None)
+                if task and not task.done():
+                    task.cancel()
+                self._codex._streams.pop(session_id, None)
+                await self._codex._close_entry(session_id)
+            except Exception:
+                pass
+        return await self.claude.delete_session(session_id)
+
+
+# Singleton router instance
+_bridge: BridgeRouter | None = None
 _session_mgr: SessionManager | None = None
 _server_root: str | None = None
 
 
-def _get_bridge(data_dir: str | None = None, server_root: str | None = None) -> ClaudeBridge:
+def _get_bridge(data_dir: str | None = None, server_root: str | None = None) -> BridgeRouter:
     global _bridge, _server_root
     if _bridge is None:
         if data_dir is None:
@@ -37,7 +158,7 @@ def _get_bridge(data_dir: str | None = None, server_root: str | None = None) -> 
         if server_root is None:
             server_root = os.getcwd()
         _server_root = server_root
-        _bridge = ClaudeBridge(data_dir, server_root=server_root)
+        _bridge = BridgeRouter(data_dir, server_root=server_root)
     return _bridge
 
 
@@ -80,15 +201,20 @@ class ChatHandler(APIHandler):
         session_id = body.get("session_id")
         message = body.get("message", "")
         model = body.get("model")
+        images = body.get("images") or []
 
-        _debug(f"  session_id={session_id}, model={model}, message_len={len(message)}")
+        _debug(
+            f"  session_id={session_id}, model={model}, "
+            f"message_len={len(message)}, images={len(images)}"
+        )
 
         if not session_id:
             self.set_status(400)
             self.finish(json.dumps({"error": "session_id is required"}))
             return
 
-        if not message:
+        # Allow an empty text message when images are attached.
+        if not message and not images:
             self.set_status(400)
             self.finish(json.dumps({"error": "message is required"}))
             return
@@ -97,7 +223,7 @@ class ChatHandler(APIHandler):
 
         # Start background task (saves user message immediately)
         try:
-            await bridge.start_message(session_id, message, model=model)
+            await bridge.start_message(session_id, message, model=model, images=images)
         except RuntimeError as e:
             self.set_status(409)
             self.finish(json.dumps({"error": str(e)}))
@@ -212,27 +338,31 @@ class SessionHandler(APIHandler):
 
 
 class ModelsHandler(APIHandler):
-    """GET /api/paper-review/models — List available Claude models."""
+    """GET /api/paper-review/models — List available models (Claude + GPT).
+
+    Claude models are hardcoded (we know what we support). GPT models are
+    fetched live from the Codex SDK so we don't drift behind OpenAI's
+    releases (e.g. gpt-5.5, gpt-5.4-mini appearing automatically).
+    """
 
     @web.authenticated
     async def get(self):
         models = [
-            {
-                "id": "claude-opus-4-6",
-                "name": "Claude Opus 4.6",
-                "tier": "opus",
-            },
-            {
-                "id": "claude-sonnet-4-6",
-                "name": "Claude Sonnet 4.6",
-                "tier": "sonnet",
-            },
+            {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "tier": "opus"},
+            {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "tier": "sonnet"},
             {
                 "id": "claude-haiku-4-5-20251001",
                 "name": "Claude Haiku 4.5",
                 "tier": "haiku",
             },
         ]
+        if CODEX_AVAILABLE:
+            bridge = _get_bridge()
+            try:
+                codex_models = await bridge.codex.list_models()
+                models.extend(codex_models)
+            except Exception as e:
+                _debug(f"Could not fetch Codex models live: {e}")
         self.finish(json.dumps({"models": models}))
 
 
@@ -277,6 +407,48 @@ class NotebooksHandler(APIHandler):
         self.finish(json.dumps({"notebooks": notebooks}))
 
 
+class AttachmentHandler(APIHandler):
+    """GET /api/paper-review/attachments/<rel_path> — Serve a saved attachment.
+
+    Files live under ``<reviews_dir>/.attachments/``. The path is validated
+    to stay inside that root so a crafted ``rel_path`` can't escape it.
+    """
+
+    _CONTENT_TYPES = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }
+
+    @web.authenticated
+    async def get(self, rel_path: str):
+        bridge = _get_bridge()
+        attach_root = os.path.realpath(os.path.join(bridge.reviews_dir, ".attachments"))
+        abs_path = os.path.realpath(os.path.join(attach_root, rel_path))
+
+        # Reject path traversal — must resolve inside the attachments root.
+        if not (abs_path == attach_root or abs_path.startswith(attach_root + os.sep)):
+            self.set_status(403)
+            self.finish(json.dumps({"error": "Forbidden"}))
+            return
+        if not os.path.isfile(abs_path):
+            self.set_status(404)
+            self.finish(json.dumps({"error": "Attachment not found"}))
+            return
+
+        ext = os.path.splitext(abs_path)[1].lower()
+        content_type = self._CONTENT_TYPES.get(ext, "application/octet-stream")
+        self.set_header("Cache-Control", "private, max-age=86400")
+        with open(abs_path, "rb") as f:
+            data = f.read()
+        # APIHandler.finish() forces application/json unless we pass
+        # set_content_type — required here so the browser renders the image
+        # (X-Content-Type-Options: nosniff is set globally).
+        self.finish(data, set_content_type=content_type)
+
+
 class CancelHandler(APIHandler):
     """POST /api/paper-review/cancel — Cancel an in-progress Claude response."""
 
@@ -294,12 +466,63 @@ class CancelHandler(APIHandler):
         self.finish(json.dumps({"cancelled": cancelled}))
 
 
+def _convert_svg_outputs_to_pdf(nb) -> int:
+    """Rewrite ``image/svg+xml`` cell outputs to ``application/pdf`` in place.
+
+    nbconvert's LaTeX path otherwise hands SVG figures to its SVG2PDF
+    preprocessor, which shells out to Inkscape — not installed here, so the
+    export dies with "Inkscape executable not found". We instead rasterize
+    the SVG to PDF with the pure-Python svglib+reportlab stack (no native
+    deps) and drop the SVG mime so the preprocessor has nothing to do.
+
+    Returns the number of outputs converted. Best-effort: an SVG that fails
+    to convert is left untouched (and will surface the original error).
+    """
+    import base64
+    import io
+
+    try:
+        from reportlab.graphics import renderPDF
+        from svglib.svglib import svg2rlg
+    except ImportError:
+        _debug("svglib/reportlab not installed — cannot convert SVG outputs")
+        return 0
+
+    converted = 0
+    for cell in nb.cells:
+        for output in cell.get("outputs", []):
+            data = output.get("data")
+            if not data or "image/svg+xml" not in data:
+                continue
+            svg = data["image/svg+xml"]
+            if isinstance(svg, list):
+                svg = "".join(svg)
+            try:
+                drawing = svg2rlg(io.BytesIO(svg.encode("utf-8")))
+                pdf_bytes = renderPDF.drawToString(drawing)
+            except Exception as e:
+                _debug(f"  SVG→PDF conversion failed for one output: {e}")
+                continue
+            # nbconvert expects application/pdf as base64 text.
+            data["application/pdf"] = base64.b64encode(pdf_bytes).decode("ascii")
+            del data["image/svg+xml"]
+            converted += 1
+    return converted
+
+
 def _notebook_to_latex(abs_path: str) -> tuple[str, dict]:
     """Convert a notebook to LaTeX using nbconvert. Returns (tex_body, resources)."""
     import nbformat
     from nbconvert import LatexExporter
 
     nb = nbformat.read(abs_path, as_version=4)
+
+    # Convert SVG figure outputs to PDF up front so nbconvert never invokes
+    # Inkscape (which isn't installed). Matplotlib SVGs with no PNG fallback
+    # would otherwise abort the export.
+    n_svg = _convert_svg_outputs_to_pdf(nb)
+    if n_svg:
+        _debug(f"  Converted {n_svg} SVG output(s) to PDF")
 
     # Replace "---" horizontal rules with "***" in markdown cells.
     # Pandoc misinterprets "---" as a YAML document separator, which
@@ -528,6 +751,7 @@ def setup_handlers(web_app):
         (route(r"sessions/(.+)"), SessionHandler),
         (route("models"), ModelsHandler),
         (route("notebooks"), NotebooksHandler),
+        (route(r"attachments/(.+)"), AttachmentHandler),
         (route("export-pdf"), ExportPdfHandler),
         (route("export-latex"), ExportLatexHandler),
     ]

@@ -44,6 +44,68 @@ def _debug(msg: str):
     print(f"[claude-bridge] {msg}", file=sys.stderr, flush=True)
 
 
+# Map of common image media types to file extensions for saved attachments.
+_IMAGE_EXT = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+}
+
+
+def save_attachments(reviews_dir: str, session_id: str, images: list[dict] | None) -> list[dict]:
+    """Persist pasted images to disk and return normalized attachment dicts.
+
+    Shared by both bridges so they save in one consistent place. Each input
+    image is ``{"data": <base64>, "media_type": "image/png"}`` (``data`` may
+    include a ``data:`` URL prefix, which we strip). Files land in
+    ``<reviews_dir>/.attachments/<session_id>/<uuid>.<ext>``.
+
+    Returns a list of dicts with:
+      - ``path``: absolute path on disk (for Codex LocalImageInput / Claude read)
+      - ``rel_path``: path relative to the attachments root (for the frontend
+        thumbnail URL and session persistence)
+      - ``media_type``: e.g. ``image/png``
+      - ``data``: raw base64 (no prefix) — used to build Claude image blocks
+    """
+    import base64
+
+    if not images:
+        return []
+
+    attach_root = os.path.join(reviews_dir, ".attachments")
+    session_dir = os.path.join(attach_root, session_id)
+    os.makedirs(session_dir, exist_ok=True)
+
+    saved: list[dict] = []
+    for img in images:
+        data = img.get("data") or ""
+        media_type = (img.get("media_type") or "image/png").lower()
+        # Strip a data-URL prefix if the frontend left one on.
+        if "," in data and data.lstrip().startswith("data:"):
+            data = data.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(data)
+        except Exception as e:
+            _debug(f"  Skipping un-decodable attachment: {e}")
+            continue
+        ext = _IMAGE_EXT.get(media_type, "png")
+        fname = f"{uuid.uuid4().hex}.{ext}"
+        abs_path = os.path.join(session_dir, fname)
+        with open(abs_path, "wb") as f:
+            f.write(raw)
+        saved.append({
+            "path": abs_path,
+            "rel_path": f"{session_id}/{fname}",
+            "media_type": media_type,
+            "data": data,
+        })
+    if saved:
+        _debug(f"  Saved {len(saved)} attachment(s) for {session_id}")
+    return saved
+
+
 DEFAULT_TOOLS = [
     "WebSearch",
     "WebFetch",
@@ -64,8 +126,20 @@ WORKSPACE:
 - IMPORTANT: NEVER access, search, or list files outside your working directory.
   All file operations (Read, Write, Edit, Glob, Grep, Bash) must stay within {reviews_dir}.
   Do NOT use absolute paths or traverse parent directories.
-- Save all notebooks and files in the current directory (no need for absolute paths).
+- Save the review notebook in the current directory (no need for absolute paths).
 - Use descriptive filenames based on the paper topic (e.g., "attention_mechanism_review.ipynb")
+
+ARTIFACT LAYOUT (any supplementary files you create or download):
+- If you download, extract, or generate supporting material for a review — paper PDFs,
+  arXiv tarballs, LaTeX sources, figures, datasets, intermediate Python scripts — put them
+  under `artifacts/<slug>/` where `<slug>` is the notebook's filename stem (without the
+  `_review.ipynb` suffix). For example, for `t2po_uncertainty_guided_exploration_control_review.ipynb`,
+  use `artifacts/t2po_uncertainty_guided_exploration_control/`.
+- Do NOT scatter supporting files at the workspace root, in `/tmp`, or in ad-hoc
+  directories. Keeping everything under `artifacts/<slug>/` makes reviews portable and
+  prevents path collisions between papers.
+- When the notebook references local resources, use relative paths from the notebook:
+  `artifacts/<slug>/<file>`.
 
 CAPABILITIES:
 - Use WebSearch to find related work, citations, or background material
@@ -163,6 +237,9 @@ class SessionInfo:
     system_prompt: str = ""
     created_at: str = ""
     messages: list = field(default_factory=list)
+    # Provider-specific resume IDs. Only one is set at a time based on
+    # which provider the session's current model belongs to.
+    codex_thread_id: str | None = None
 
 
 @dataclass
@@ -284,6 +361,9 @@ class ClaudeBridge:
             return None
         with open(path) as f:
             data = json.load(f)
+        # Drop unknown keys so adding new fields stays backward compatible.
+        valid_fields = set(SessionInfo.__dataclass_fields__.keys())
+        data = {k: v for k, v in data.items() if k in valid_fields}
         return SessionInfo(**data)
 
     def list_sessions(self) -> list[dict]:
@@ -549,11 +629,13 @@ class ClaudeBridge:
         session_id: str,
         message: str,
         model: str | None = None,
+        images: list[dict] | None = None,
     ) -> None:
         """Save the user message and start a background streaming task.
 
         Returns immediately.  Callers should use ``subscribe()`` to read
-        events from the resulting stream.
+        events from the resulting stream.  *images* is an optional list of
+        ``{"data": <base64>, "media_type": ...}`` pasted images.
         """
         # Reject if a stream is already running for this session
         existing = self._streams.get(session_id)
@@ -564,10 +646,19 @@ class ClaudeBridge:
         if not session:
             raise ValueError(f"Session {session_id} not found")
 
+        # Save any pasted images to disk so they survive and can be referenced.
+        attachments = save_attachments(self.reviews_dir, session_id, images)
+
         # Persist the user question NOW so it can never be lost
         if model:
             session.model = model
-        session.messages.append({"role": "user", "content": message})
+        user_msg: dict = {"role": "user", "content": message}
+        if attachments:
+            user_msg["attachments"] = [
+                {"rel_path": a["rel_path"], "media_type": a["media_type"]}
+                for a in attachments
+            ]
+        session.messages.append(user_msg)
         self._save_session(session)
 
         # Create the event buffer and kick off the background task
@@ -575,7 +666,7 @@ class ClaudeBridge:
         self._streams[session_id] = stream
 
         task = asyncio.create_task(
-            self._run_stream_task(session_id, message, model, stream)
+            self._run_stream_task(session_id, message, model, stream, attachments)
         )
         self._stream_tasks[session_id] = task
 
@@ -613,6 +704,7 @@ class ClaudeBridge:
         message: str,
         model: str | None,
         stream: SessionStream,
+        attachments: list[dict] | None = None,
     ) -> None:
         """Background coroutine that drives the SDK and feeds *stream*."""
         try:
@@ -636,6 +728,7 @@ class ClaudeBridge:
 
             async for event in self.send_message(
                 session_id, actual_message, model=model, _user_msg_persisted=True,
+                images=attachments,
             ):
                 await stream.put(event)
         except _StaleResumeError:
@@ -652,6 +745,7 @@ class ClaudeBridge:
             try:
                 async for event in self.send_message(
                     session_id, enriched, model=model, _user_msg_persisted=True,
+                    images=attachments,
                 ):
                     await stream.put(event)
             except Exception as retry_err:
@@ -717,6 +811,7 @@ class ClaudeBridge:
         model: str | None = None,
         allowed_tools: list[str] | None = None,
         _user_msg_persisted: bool = False,
+        images: list[dict] | None = None,
     ) -> AsyncIterator[dict]:
         """Send a message via the Agent SDK and stream back events.
 
@@ -753,6 +848,40 @@ class ClaudeBridge:
         accumulated_text = ""
         claude_session_id = session.claude_session_id
         yielded_done = False
+
+        # Build image content blocks once. When present, the SDK query input
+        # must be an async-iterable of message dicts (text + image blocks)
+        # rather than a plain string. query() may be re-issued on retry, and
+        # an async generator is single-use, so we use a factory that returns
+        # a fresh iterable each call.
+        _image_blocks = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.get("media_type", "image/png"),
+                    "data": img["data"],
+                },
+            }
+            for img in (images or [])
+            if img.get("data")
+        ]
+
+        def _query_input(text: str):
+            if not _image_blocks:
+                return text  # preserve plain-string behavior when no images
+
+            async def _gen():
+                yield {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": text}, *_image_blocks],
+                    },
+                    "parent_tool_use_id": None,
+                }
+
+            return _gen()
         # Track whether streaming captured text for the CURRENT turn.
         # Reset on each new turn (message_start) so the AssistantMessage
         # fallback works correctly for multi-turn tool interactions.
@@ -772,7 +901,7 @@ class ClaudeBridge:
             async with entry.lock:
                 _debug(f"  Sending query to SDK client...")
                 try:
-                    await entry.client.query(message)
+                    await entry.client.query(_query_input(message))
                 except (ProcessError, ClaudeSDKError, OSError) as query_err:
                     if self._is_dead_process_error(query_err):
                         _debug(f"  Dead process on query ({query_err}), recreating client...")
@@ -784,7 +913,7 @@ class ClaudeBridge:
                                 await entry.client.set_model(model)
                             except Exception:
                                 pass
-                        await entry.client.query(message)
+                        await entry.client.query(_query_input(message))
                     else:
                         raise
 
@@ -809,7 +938,7 @@ class ClaudeBridge:
                                 await entry.client.set_model(model)
                             except Exception:
                                 pass
-                        await entry.client.query(message)
+                        await entry.client.query(_query_input(message))
                         response_iter = entry.client.receive_response()
                         first_msg = await response_iter.__anext__()
                     else:

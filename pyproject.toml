@@ -14,6 +14,15 @@ dependencies = [
     "jupyterlab>=4.0.0,<5",
     "tornado>=6.0",
     "claude-agent-sdk>=0.1.0",
+    "nbconvert>=7.0",
+    # PDF export: convert notebook SVG figures to PDF without Inkscape
+    # (pure-Python, no native deps).
+    "svglib>=1.5",
+    "reportlab>=4.0",
+    # openai-codex is optional and not yet on PyPI — install manually:
+    #   git clone https://github.com/openai/codex
+    #   pip install -e codex/sdk/python
+    # The router gracefully falls back to Claude-only if it's missing.
 ]
 
 [tool.hatch.build.targets.sdist]

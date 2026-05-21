@@ -19,6 +19,8 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps): React.Re
           { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', tier: 'opus' },
           { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', tier: 'sonnet' },
           { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', tier: 'haiku' },
+          { id: 'gpt-5.5', name: 'GPT-5.5', tier: 'gpt5' },
+          { id: 'gpt-5.4', name: 'GPT-5.4', tier: 'gpt5' },
         ]);
       });
   }, []);

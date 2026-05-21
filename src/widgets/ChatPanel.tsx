@@ -6,6 +6,8 @@ import {
   getStreamStatus,
   subscribeStream,
   cancelChat,
+  attachmentUrl,
+  ChatImage,
   StreamEvent,
 } from '../services/api';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -14,6 +16,21 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   toolUses?: Array<{ tool: string; input: Record<string, unknown> }>;
+  /** Ready-to-use <img> srcs for any image attachments (data: or API URLs). */
+  imageUrls?: string[];
+}
+
+/** Convert a persisted session message into a display Message. */
+function toDisplayMessage(m: {
+  role: string;
+  content: string;
+  attachments?: Array<{ rel_path: string; media_type: string }>;
+}): Message {
+  return {
+    role: m.role as 'user' | 'assistant',
+    content: m.content,
+    imageUrls: m.attachments?.map(a => attachmentUrl(a.rel_path)),
+  };
 }
 
 const MessageList = React.memo(function MessageList({
@@ -32,7 +49,16 @@ const MessageList = React.memo(function MessageList({
             {msg.role === 'assistant' ? (
               <MarkdownRenderer content={msg.content} />
             ) : (
-              <p>{msg.content}</p>
+              msg.content && <p>{msg.content}</p>
+            )}
+            {msg.imageUrls && msg.imageUrls.length > 0 && (
+              <div className="pr-chat-attachments">
+                {msg.imageUrls.map((src, i) => (
+                  <a key={i} href={src} target="_blank" rel="noreferrer">
+                    <img className="pr-chat-attachment" src={src} alt="attachment" />
+                  </a>
+                ))}
+              </div>
             )}
           </div>
           {msg.toolUses && msg.toolUses.length > 0 && (
@@ -66,6 +92,8 @@ export function ChatPanel({
 }: ChatPanelProps): React.ReactElement {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  // Images pasted into the input, staged until the message is sent.
+  const [pendingImages, setPendingImages] = useState<ChatImage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [activeTools, setActiveTools] = useState<string[]>([]);
@@ -208,12 +236,7 @@ export function ChatPanel({
         if (cancelled || activeSessionRef.current !== sessionId) return;
 
         if (session.messages && session.messages.length > 0) {
-          setMessages(
-            session.messages.map(m => ({
-              role: m.role as 'user' | 'assistant',
-              content: m.content,
-            }))
-          );
+          setMessages(session.messages.map(toDisplayMessage));
         } else {
           setMessages([]);
         }
@@ -254,12 +277,7 @@ export function ChatPanel({
             try {
               const refreshed = await getSession(sessionId);
               if (activeSessionRef.current === sessionId && refreshed.messages?.length) {
-                setMessages(
-                  refreshed.messages.map(m => ({
-                    role: m.role as 'user' | 'assistant',
-                    content: m.content,
-                  }))
-                );
+                setMessages(refreshed.messages.map(toDisplayMessage));
               }
             } catch {
               // Best-effort reload
@@ -282,13 +300,26 @@ export function ChatPanel({
   // Send a new message
   // -------------------------------------------------------------------
   const doSend = useCallback(
-    async (messageText: string) => {
-      if (!messageText.trim() || !sessionId || isStreaming) return;
+    async (messageText: string, images: ChatImage[] = []) => {
+      if ((!messageText.trim() && images.length === 0) || !sessionId || isStreaming) {
+        return;
+      }
 
       const userMessage = messageText.trim();
       const mySessionId = sessionId;
+      const imageUrls = images.map(
+        img => `data:${img.media_type};base64,${img.data}`
+      );
       setInput('');
-      setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+      setPendingImages([]);
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'user',
+          content: userMessage,
+          imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+        },
+      ]);
       setIsStreaming(true);
       setStreamingText('');
       setActiveTools([]);
@@ -308,7 +339,8 @@ export function ChatPanel({
           sessionId,
           userMessage,
           model,
-          controller.signal
+          controller.signal,
+          images
         )) {
           if (activeSessionRef.current !== mySessionId) break;
           if (event.type === 'done') receivedDone = true;
@@ -367,8 +399,8 @@ export function ChatPanel({
   }, [pendingPrompt, sessionId, isStreaming, doSend, onPromptConsumed]);
 
   const handleSend = useCallback(() => {
-    doSend(input);
-  }, [input, doSend]);
+    doSend(input, pendingImages);
+  }, [input, pendingImages, doSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -379,6 +411,36 @@ export function ChatPanel({
     },
     [handleSend]
   );
+
+  // Capture images pasted (Ctrl/Cmd-V) into the textarea. Plain textareas
+  // ignore image data, so we read the clipboard items ourselves and stage
+  // each image as base64 to send with the next message.
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageItems = Array.from(items).filter(it => it.type.startsWith('image/'));
+    if (imageItems.length === 0) return;
+    e.preventDefault();
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (!file) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || '');
+        const comma = result.indexOf(',');
+        const data = comma >= 0 ? result.slice(comma + 1) : result;
+        setPendingImages(prev => [
+          ...prev,
+          { data, media_type: file.type || 'image/png' },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
+
+  const removePendingImage = useCallback((index: number) => {
+    setPendingImages(prev => prev.filter((_, i) => i !== index));
+  }, []);
 
   return (
     <div className="pr-chat-panel">
@@ -425,15 +487,36 @@ export function ChatPanel({
       </div>
 
       <div className="pr-chat-input-container">
+        {pendingImages.length > 0 && (
+          <div className="pr-chat-pending-images">
+            {pendingImages.map((img, i) => (
+              <div key={i} className="pr-pending-image">
+                <img
+                  src={`data:${img.media_type};base64,${img.data}`}
+                  alt="pasted"
+                />
+                <button
+                  type="button"
+                  className="pr-pending-image-remove"
+                  onClick={() => removePendingImage(i)}
+                  title="Remove image"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           ref={inputRef}
           className="pr-chat-input"
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder={
             sessionId
-              ? 'Ask about a paper, paste a URL, or use a prompt below...'
+              ? 'Ask about a paper, paste a URL or image, or use a prompt below...'
               : 'Create or select a session to start chatting'
           }
           disabled={!sessionId || isStreaming}
@@ -449,7 +532,7 @@ export function ChatPanel({
           <button
             className="pr-chat-send-btn"
             onClick={handleSend}
-            disabled={!sessionId || !input.trim()}
+            disabled={!sessionId || (!input.trim() && pendingImages.length === 0)}
           >
             Send
           </button>

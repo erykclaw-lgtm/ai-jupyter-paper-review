@@ -17,32 +17,6 @@ interface Prompt {
 
 const PROMPTS: Prompt[] = [
   {
-    id: 'init-session',
-    label: 'Full Review',
-    icon: '\u{1F4D6}',
-    description: 'Deep pedagogical review with exercises and answer file',
-    needsUrl: true,
-    template: `Fetch and produce a deep pedagogical review of this paper: {url}
-
-Use WebFetch to retrieve the paper content, then follow the full "Deep Paper Review & Pedagogical Writeup" instructions in your system prompt.
-
-Make sure you:
-- Search the web for additional context (blog posts, follow-up work, errata, community discussion)
-- Derive every equation step by step — no skipped steps. State any invoked theorem/identity formally, then walk through its application
-- Annotate each derivation step explaining *why* that manipulation was performed
-- Build up advanced concepts from first principles (assume undergrad-level math baseline)
-- Include annotated Python/PyTorch code blocks with inline comments mapping math notation to code variables
-- Write in the voice of a professor teaching a seminar — explain the *why* behind each design choice
-- Surface any "hidden steps" where the paper hand-waves or compresses logical steps
-- Summarize referenced supplementary materials, appendices, and prior work
-- Follow the paper's section organization but expand with derivations, intuitions, and code demos
-- Add a Prerequisites section at the top
-- Link to the original paper prominently at the top
-- Include 1-3 exercises at the end with a companion .answers file
-- Keep all visualizations inline in the notebook — use plt.show() or display(), never write separate .png/.svg/.pdf image files
-- This should be thorough and long-form — tutorial-length lecture notes, not a summary`,
-  },
-  {
     id: 'guided-walkthrough',
     label: 'Guided Walkthrough',
     icon: '\u{1F9ED}',

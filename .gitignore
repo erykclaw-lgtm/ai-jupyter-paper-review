@@ -37,3 +37,6 @@ Thumbs.db
 .yarn/cache/
 .yarn/install-state.gz
 .pnp.*
+
+# Vendored Codex SDK source (cloned by setup.sh)
+.codex-src/

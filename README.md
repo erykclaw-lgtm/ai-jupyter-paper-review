@@ -50,40 +50,24 @@ The Claude Agent SDK maintains a persistent Claude Code process per session, so 
 
 ## Setup
 
-### 1. Clone and install the extension
-
 ```bash
 git clone <repo-url>
 cd ai-jupyter-paper-review
 
-# Install the JupyterLab extension and server extension
-pip install -e .
+./setup.sh
 ```
 
-### 2. Create the Paper Review kernel
+`setup.sh` is idempotent and does everything in one shot:
 
-This creates a Python virtual environment with scientific computing packages and registers it as a Jupyter kernel:
+1. Installs the server + lab extension into the server's Python (`pip install -e .`).
+2. Installs the optional **openai-codex** SDK so GPT/Codex models work (cloned to `.codex-src/`). Without it, only Claude models appear.
+3. Installs JS deps and builds the frontend (`jlpm install && jlpm build`).
+4. Creates the **paper-review** kernel venv (NumPy, SciPy, Matplotlib, Pandas, scikit-learn, Seaborn, SymPy, JAX, transformers, and where available PyTorch).
 
-```bash
-./create_kernel.sh
-```
-
-This installs: NumPy, SciPy, Matplotlib, Pandas, scikit-learn, Seaborn, SymPy, JAX, transformers, and (where available) PyTorch.
-
-### 3. Build the frontend
+Then start the app:
 
 ```bash
-# Install JS dependencies
-jlpm install
-
-# Build the extension
-jlpm build
-```
-
-### 4. Start JupyterLab
-
-```bash
-jupyter lab
+./start.sh
 ```
 
 The Paper Review panel will auto-open in the right sidebar.
@@ -126,7 +110,8 @@ ai-jupyter-paper-review/
 │   └── sessions/                 # Session state files
 ├── style/index.css               # Styles (JupyterLab theme vars)
 ├── jupyter-config/               # Jupyter server config
-├── create_kernel.sh              # Kernel setup script
+├── setup.sh                      # One-shot environment setup
+├── create_kernel.sh              # Kernel setup script (called by setup.sh)
 ├── start.sh                      # Dev startup script (miniforge-specific)
 ├── package.json                  # JS dependencies
 ├── pyproject.toml                # Python package config
