@@ -16,7 +16,7 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps): React.Re
       .catch(() => {
         // Fallback if API is unavailable
         setModels([
-          { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', tier: 'opus' },
+          { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', tier: 'opus' },
           { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', tier: 'sonnet' },
           { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', tier: 'haiku' },
           { id: 'gpt-5.5', name: 'GPT-5.5', tier: 'gpt5' },

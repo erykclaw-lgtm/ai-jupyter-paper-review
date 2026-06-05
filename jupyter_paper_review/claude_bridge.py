@@ -332,12 +332,153 @@ class ClaudeBridge:
         self._streams: dict[str, SessionStream] = {}
         self._stream_tasks: dict[str, asyncio.Task] = {}
 
+        # Cached Claude model list (mirrors CodexBridge). Fetched live from the
+        # Anthropic models API using the CLI's OAuth credentials.
+        self._models_cache: list[dict] | None = None
+        self._models_cache_ts: float = 0.0
+        self._models_cache_lock = asyncio.Lock()
+
     def _get_session_path(self, session_id: str) -> str:
         return os.path.join(self.sessions_dir, f"{session_id}.json")
 
     def _get_system_prompt(self) -> str:
         """Build the system prompt with the reviews directory path."""
         return PAPER_REVIEW_SYSTEM_PROMPT.format(reviews_dir=self.reviews_dir)
+
+    # ------------------------------------------------------------------
+    # Dynamic model discovery
+    # ------------------------------------------------------------------
+    # Cache the model list for 30 min so we don't hit the API / keychain on
+    # every ModelsHandler request.
+    _MODEL_CACHE_TTL_S = 1800
+
+    # Used when live discovery fails (no creds, offline, non-macOS without a
+    # credentials file, token expired). Kept current as a sensible default.
+    _FALLBACK_MODELS = [
+        {"id": "claude-opus-4-8", "name": "Claude Opus 4.8", "tier": "opus"},
+        {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "tier": "sonnet"},
+        {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5", "tier": "haiku"},
+    ]
+
+    @staticmethod
+    def _model_tier(model_id: str) -> str:
+        for tier in ("opus", "sonnet", "haiku"):
+            if tier in model_id:
+                return tier
+        return "claude"
+
+    @staticmethod
+    def _read_oauth_token() -> str | None:
+        """Read the Claude CLI's OAuth access token.
+
+        The Agent SDK authenticates through the ``claude`` CLI's stored
+        subscription credentials (no ANTHROPIC_API_KEY needed). Those live in
+        ``~/.claude/.credentials.json`` on Linux, or the macOS keychain under
+        the ``Claude Code-credentials`` service. We read whichever is present.
+        Returns ``None`` if no token can be found.
+        """
+        # 1. Credentials file (Linux / some installs).
+        cred_path = os.path.expanduser("~/.claude/.credentials.json")
+        if os.path.exists(cred_path):
+            try:
+                with open(cred_path) as f:
+                    data = json.load(f)
+                token = data.get("claudeAiOauth", {}).get("accessToken")
+                if token:
+                    return token
+            except Exception as e:
+                _debug(f"  Could not read credentials file: {e}")
+
+        # 2. macOS keychain.
+        if sys.platform == "darwin":
+            try:
+                import subprocess
+
+                out = subprocess.run(
+                    ["security", "find-generic-password",
+                     "-s", "Claude Code-credentials", "-w"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if out.returncode == 0 and out.stdout.strip():
+                    data = json.loads(out.stdout)
+                    token = data.get("claudeAiOauth", {}).get("accessToken")
+                    if token:
+                        return token
+            except Exception as e:
+                _debug(f"  Could not read keychain credentials: {e}")
+
+        return None
+
+    def _fetch_models_sync(self) -> list[dict]:
+        """Blocking fetch of the live Claude model list. Runs in an executor."""
+        import urllib.request
+
+        token = self._read_oauth_token()
+        if not token:
+            _debug("  No OAuth token found — using fallback model list")
+            return list(self._FALLBACK_MODELS)
+
+        base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+        req = urllib.request.Request(
+            f"{base}/v1/models?limit=100",
+            headers={
+                "authorization": f"Bearer {token}",
+                "anthropic-version": "2023-06-01",
+                # Required for OAuth (subscription) tokens, harmless otherwise.
+                "anthropic-beta": "oauth-2025-04-20",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+
+        # API returns newest-first. Keep only the latest model per family
+        # (Opus/Sonnet/Haiku) so the dropdown stays clean while remaining
+        # dynamic — a future opus-4-9 transparently replaces 4.8 here.
+        seen_tiers: set[str] = set()
+        models = []
+        for m in payload.get("data", []):
+            mid = m.get("id")
+            if not mid:
+                continue
+            tier = self._model_tier(mid)
+            if tier in ("opus", "sonnet", "haiku"):
+                if tier in seen_tiers:
+                    continue
+                seen_tiers.add(tier)
+            models.append({
+                "id": mid,
+                "name": m.get("display_name") or mid,
+                "tier": tier,
+            })
+        return models or list(self._FALLBACK_MODELS)
+
+    async def list_models(self) -> list[dict]:
+        """Return the live list of Claude models, cached for 30 minutes.
+
+        Discovered from the Anthropic models API via the CLI's OAuth token so
+        new releases (e.g. a future opus-4-9) appear automatically with no code
+        change. Falls back to a static list on any failure.
+        """
+        async with self._models_cache_lock:
+            now = time.monotonic()
+            if (
+                self._models_cache is not None
+                and now - self._models_cache_ts < self._MODEL_CACHE_TTL_S
+            ):
+                return self._models_cache
+
+            try:
+                loop = asyncio.get_event_loop()
+                models = await loop.run_in_executor(None, self._fetch_models_sync)
+            except Exception as e:
+                _debug(f"  Live model discovery failed: {e}")
+                if self._models_cache is not None:
+                    return self._models_cache
+                return list(self._FALLBACK_MODELS)
+
+            self._models_cache = models
+            self._models_cache_ts = now
+            return models
 
     def create_session(
         self, paper_url: str | None = None, model: str = "claude-sonnet-4-6"

@@ -340,24 +340,23 @@ class SessionHandler(APIHandler):
 class ModelsHandler(APIHandler):
     """GET /api/paper-review/models — List available models (Claude + GPT).
 
-    Claude models are hardcoded (we know what we support). GPT models are
-    fetched live from the Codex SDK so we don't drift behind OpenAI's
-    releases (e.g. gpt-5.5, gpt-5.4-mini appearing automatically).
+    Both providers are discovered live: Claude from the Anthropic models API
+    (via the CLI's OAuth token) and GPT from the Codex SDK. New releases
+    appear automatically with no code change. Each provider falls back to a
+    static list if its live lookup fails.
     """
 
     @web.authenticated
     async def get(self):
-        models = [
-            {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "tier": "opus"},
-            {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "tier": "sonnet"},
-            {
-                "id": "claude-haiku-4-5-20251001",
-                "name": "Claude Haiku 4.5",
-                "tier": "haiku",
-            },
-        ]
+        bridge = _get_bridge()
+
+        try:
+            models = list(await bridge.claude.list_models())
+        except Exception as e:
+            _debug(f"Could not fetch Claude models live: {e}")
+            models = list(bridge.claude._FALLBACK_MODELS)
+
         if CODEX_AVAILABLE:
-            bridge = _get_bridge()
             try:
                 codex_models = await bridge.codex.list_models()
                 models.extend(codex_models)

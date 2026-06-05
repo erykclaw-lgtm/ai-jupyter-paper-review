@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -48,6 +49,39 @@ logger = logging.getLogger(__name__)
 
 def _debug(msg: str):
     print(f"[codex-bridge] {msg}", file=sys.stderr, flush=True)
+
+
+_GPT_ID_RE = re.compile(r"^gpt-(\d+(?:\.\d+)*)(?:-(.+))?$")
+
+
+def _gpt_family_version(model_id: str) -> tuple[str, tuple[int, ...]]:
+    """Split a GPT model id into (variant family, version tuple).
+
+    ``gpt-5.5`` -> ("", (5, 5)); ``gpt-5.4-mini`` -> ("mini", (5, 4));
+    ``gpt-5.3-codex-spark`` -> ("codex-spark", (5, 3)). Unparseable ids become
+    their own family so they're never dropped.
+    """
+    m = _GPT_ID_RE.match(model_id)
+    if not m:
+        return model_id, ()
+    version = tuple(int(p) for p in m.group(1).split("."))
+    return (m.group(2) or ""), version
+
+
+def _latest_per_family(models: list[dict]) -> list[dict]:
+    """Keep only the newest model within each variant family.
+
+    Mirrors the Claude side: redundant older base versions (e.g. 5.4, 5.2 when
+    5.5 exists) are dropped, while distinct variants (mini, codex, codex-spark)
+    each keep their latest. Stays dynamic — a future gpt-5.6 replaces 5.5 here.
+    """
+    best: dict[str, tuple[tuple[int, ...], dict]] = {}
+    for m in models:
+        fam, ver = _gpt_family_version(m["id"])
+        cur = best.get(fam)
+        if cur is None or ver > cur[0]:
+            best[fam] = (ver, m)
+    return [entry[1] for entry in best.values()]
 
 
 # Item types that we surface as "tool_use" to the frontend. Maps the
@@ -139,8 +173,18 @@ class CodexBridge:
                         "description": getattr(m, "description", None) or "",
                         "is_default": bool(getattr(m, "is_default", False)),
                     })
-                # Sort: default first, then by id descending (newer versions first)
-                models.sort(key=lambda x: (not x["is_default"], x["id"]), reverse=False)
+                # Collapse to the latest model per variant family so the
+                # dropdown isn't cluttered with redundant older versions.
+                models = _latest_per_family(models)
+                # Sort newest version first (base "" family wins ties), so the
+                # latest GPT leads — mirrors Claude leading with opus-4-8.
+                models.sort(
+                    key=lambda x: (
+                        tuple(-n for n in _gpt_family_version(x["id"])[1]),
+                        _gpt_family_version(x["id"])[0],
+                        x["id"],
+                    )
+                )
                 self._models_cache = models
                 self._models_cache_ts = now
                 return models
