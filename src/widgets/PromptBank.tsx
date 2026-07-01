@@ -9,10 +9,12 @@ interface Prompt {
   label: string;
   icon: string;
   description: string;
-  /** The prompt text sent to Claude. Use {url} as placeholder for paper URL. */
+  /** The prompt text sent to Claude. Use {url} as placeholder for paper URL(s). */
   template: string;
-  /** If true, prompt the user for a paper URL before sending */
+  /** If true, prompt the user for paper URL(s) before sending */
   needsUrl?: boolean;
+  /** Custom placeholder for the URL input (e.g. when multiple URLs are expected) */
+  urlPlaceholder?: string;
 }
 
 const PROMPTS: Prompt[] = [
@@ -34,6 +36,27 @@ Create a Jupyter notebook that walks through the paper step by step. For each se
 Keep all visualizations inline in the notebook — use plt.show() or display(), never write separate .png/.svg/.pdf image files.
 
 No exercises needed — focus purely on building deep understanding. Be thorough and long-form; think tutorial-length lecture notes, not a summary.`,
+  },
+  {
+    id: 'multi-paper-survey',
+    label: 'Multi-Paper Survey',
+    icon: '\u{1F4DA}',
+    description: 'Synthesize several papers into one unified survey/review notebook',
+    needsUrl: true,
+    urlPlaceholder: 'Paste paper URLs (comma or newline separated) and press Enter...',
+    template: `Create a multi-paper survey and review of these papers: {url}
+
+Fetch each paper (use WebFetch and web search) and produce a SINGLE Jupyter notebook that synthesizes across all of them — not separate per-paper summaries, but one unified survey. Structure it as:
+
+- **Overview & motivation**: What problem space do these papers collectively address, and why does this line of work matter? Frame the common thread that ties them together.
+- **Unified background**: A shared "Prerequisites" section covering the math/ML concepts needed across the papers, using one consistent notation you reuse throughout.
+- **Comparative walkthrough**: For each core idea, explain the approach, derive the key equations step by step (including hidden or skipped steps), and give the intuition behind the design choices. Where papers tackle the same sub-problem differently, compare them head to head.
+- **Comparison tables**: Summarize the papers along the axes that matter — method, assumptions, complexity, datasets, results, trade-offs.
+- **Evolution & relationships**: How do these papers build on, contradict, or complement each other? Trace the intellectual lineage and where the field is heading.
+- **Code**: Annotated PyTorch snippets that illustrate and contrast the key mechanisms, with inline comments mapping math notation to code variables.
+- **Synthesis & open problems**: Pull the threads together — the unified takeaway, what remains unresolved, and what to read or build next.
+
+Use web search to fill gaps — related work, follow-ups, blog posts, community discussion, errata. Keep all visualizations inline in the notebook — use plt.show() or display(), never write separate .png/.svg/.pdf image files. Be thorough and long-form — think a survey-length pedagogical review, not a summary.`,
   },
 ];
 
@@ -118,7 +141,7 @@ export function PromptBank({ onSelectPrompt, sessionId }: PromptBankProps): Reac
                     value={urlInput}
                     onChange={e => setUrlInput(e.target.value)}
                     onKeyDown={handleUrlKeyDown}
-                    placeholder="Paste paper URL and press Enter..."
+                    placeholder={prompt.urlPlaceholder || 'Paste paper URL and press Enter...'}
                     autoFocus
                   />
                   <button onClick={handleUrlSubmit} disabled={!urlInput.trim()}>
