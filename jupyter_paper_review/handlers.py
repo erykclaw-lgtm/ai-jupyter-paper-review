@@ -537,19 +537,68 @@ def _notebook_to_latex(abs_path: str) -> tuple[str, dict]:
     return exporter.from_notebook_node(nb)
 
 
-# LaTeX snippet injected right after \begin{document} to handle Unicode chars
-# that Latin Modern lacks (e.g. ✓ ✗). Tectonic uses XeTeX so fontspec is loaded.
+# LaTeX preamble snippet injected before \begin{document}. Maps Unicode symbols
+# that Latin Modern lacks to standard LaTeX commands (amssymb) rather than a
+# fallback font — so no system font (DejaVu Sans etc.) needs to be installed.
+# \ensuremath lets each symbol work in both text and math contexts. Also caps
+# image width so large figures don't overflow ("Dimension too large").
 _UNICODE_FONT_PATCH = r"""
-% -- paper-review patch: Unicode fallback for symbols missing in Latin Modern --
+% -- paper-review patch: font-independent Unicode symbols + image sizing --
+\usepackage{amssymb}
 \usepackage{newunicodechar}
-\newfontfamily\fallbackfont{DejaVu Sans}[Scale=MatchLowercase]
-\newunicodechar{✓}{{\fallbackfont ✓}}
-\newunicodechar{✗}{{\fallbackfont ✗}}
-\newunicodechar{✔}{{\fallbackfont ✔}}
-\newunicodechar{✘}{{\fallbackfont ✘}}
-\newunicodechar{→}{{\fallbackfont →}}
-\newunicodechar{←}{{\fallbackfont ←}}
-\newunicodechar{⟹}{{\fallbackfont ⟹}}
+% Cap every image at text width without upscaling smaller ones.
+\usepackage[export]{adjustbox}
+\makeatletter
+\providecommand{\maxwidth}{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
+\makeatother
+\setkeys{Gin}{width=\maxwidth,keepaspectratio}
+% Arrows
+\newunicodechar{→}{\ensuremath{\rightarrow}}
+\newunicodechar{←}{\ensuremath{\leftarrow}}
+\newunicodechar{↔}{\ensuremath{\leftrightarrow}}
+\newunicodechar{↦}{\ensuremath{\mapsto}}
+\newunicodechar{⇒}{\ensuremath{\Rightarrow}}
+\newunicodechar{⇐}{\ensuremath{\Leftarrow}}
+\newunicodechar{⇔}{\ensuremath{\Leftrightarrow}}
+\newunicodechar{⟹}{\ensuremath{\Longrightarrow}}
+% Relations & operators
+\newunicodechar{−}{\ensuremath{-}}
+\newunicodechar{×}{\ensuremath{\times}}
+\newunicodechar{÷}{\ensuremath{\div}}
+\newunicodechar{±}{\ensuremath{\pm}}
+\newunicodechar{·}{\ensuremath{\cdot}}
+\newunicodechar{≈}{\ensuremath{\approx}}
+\newunicodechar{≠}{\ensuremath{\neq}}
+\newunicodechar{≤}{\ensuremath{\leq}}
+\newunicodechar{≥}{\ensuremath{\geq}}
+\newunicodechar{≪}{\ensuremath{\ll}}
+\newunicodechar{≫}{\ensuremath{\gg}}
+\newunicodechar{≡}{\ensuremath{\equiv}}
+\newunicodechar{∝}{\ensuremath{\propto}}
+\newunicodechar{∞}{\ensuremath{\infty}}
+\newunicodechar{∈}{\ensuremath{\in}}
+\newunicodechar{∉}{\ensuremath{\notin}}
+\newunicodechar{⊂}{\ensuremath{\subset}}
+\newunicodechar{⊆}{\ensuremath{\subseteq}}
+\newunicodechar{∩}{\ensuremath{\cap}}
+\newunicodechar{∪}{\ensuremath{\cup}}
+\newunicodechar{∀}{\ensuremath{\forall}}
+\newunicodechar{∃}{\ensuremath{\exists}}
+\newunicodechar{∇}{\ensuremath{\nabla}}
+\newunicodechar{∂}{\ensuremath{\partial}}
+\newunicodechar{∑}{\ensuremath{\sum}}
+\newunicodechar{∏}{\ensuremath{\prod}}
+\newunicodechar{∫}{\ensuremath{\int}}
+% Checkmarks & crosses
+\newunicodechar{✓}{\ensuremath{\checkmark}}
+\newunicodechar{✔}{\ensuremath{\checkmark}}
+\newunicodechar{✅}{\ensuremath{\checkmark}}
+\newunicodechar{✗}{\ensuremath{\times}}
+\newunicodechar{✘}{\ensuremath{\times}}
+% Punctuation
+\newunicodechar{…}{\ldots}
+\newunicodechar{—}{\textemdash}
+\newunicodechar{–}{\textendash}
 % -- end patch --
 """
 
@@ -583,8 +632,45 @@ def _patch_tex(tex_body: str) -> str:
     return tex_body
 
 
-def _compile_tex_to_pdf(tex_body: str, resources: dict) -> bytes:
-    """Compile a LaTeX string to PDF using tectonic. Returns PDF bytes."""
+def _copy_referenced_images(tex_body: str, base_dir: str, tmpdir: str) -> int:
+    """Copy local images referenced by \\includegraphics into *tmpdir*.
+
+    nbconvert emits ``\\includegraphics{artifacts/.../fig.png}`` for images the
+    notebook references by relative path (as opposed to inline cell outputs,
+    which arrive via ``resources``). tectonic compiles inside *tmpdir* and can't
+    see the notebook's sibling files, so we resolve each relative path against
+    *base_dir* and copy it in, preserving the subpath. Path traversal outside
+    *base_dir* is refused.
+    """
+    import shutil
+
+    base_real = os.path.realpath(base_dir)
+    copied = 0
+    for m in re.finditer(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", tex_body):
+        ref = m.group(1).strip()
+        if ref.startswith(("http://", "https://", "/")) or ref.startswith("data:"):
+            continue
+        src = os.path.realpath(os.path.join(base_dir, ref))
+        # Refuse anything that escapes the notebook's directory.
+        if os.path.commonpath([base_real, src]) != base_real:
+            continue
+        if not os.path.isfile(src):
+            continue
+        dst = os.path.join(tmpdir, ref)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+        copied += 1
+    if copied:
+        _debug(f"  Copied {copied} referenced image(s) into build dir")
+    return copied
+
+
+def _compile_tex_to_pdf(tex_body: str, resources: dict, base_dir: str | None = None) -> bytes:
+    """Compile a LaTeX string to PDF using tectonic. Returns PDF bytes.
+
+    *base_dir* is the notebook's directory, used to resolve and copy local
+    images referenced by relative path.
+    """
     tex_body = _patch_tex(tex_body)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -598,6 +684,10 @@ def _compile_tex_to_pdf(tex_body: str, resources: dict) -> bytes:
         for fname, data in resources.get("outputs", {}).items():
             with open(os.path.join(tmpdir, fname), "wb") as f:
                 f.write(data)
+
+        # Copy images the notebook references by relative path (e.g. artifacts/)
+        if base_dir:
+            _copy_referenced_images(tex_body, base_dir, tmpdir)
 
         result = subprocess.run(
             ["tectonic", "-X", "compile", "-Z", "continue-on-errors", tex_path],
@@ -647,8 +737,9 @@ class ExportPdfHandler(APIHandler):
             )
 
             _debug("  Compiling LaTeX → PDF via tectonic")
+            nb_dir = os.path.dirname(abs_path)
             pdf_data = await loop.run_in_executor(
-                None, lambda: _compile_tex_to_pdf(tex_body, resources)
+                None, lambda: _compile_tex_to_pdf(tex_body, resources, base_dir=nb_dir)
             )
 
             stem = Path(notebook_path).stem
