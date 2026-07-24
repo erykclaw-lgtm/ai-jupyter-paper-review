@@ -22,12 +22,24 @@ const REHYPE_PLUGINS = [rehypeKatex, rehypeHighlight];
  * the raw LaTeX leaks through as text. We rewrite the bracket/paren forms to
  * dollar forms. Claude's content has no `\[`/`\(`, so this is a no-op for it.
  *
+ * GPT also sometimes emits bare LaTeX environments with no delimiters at all
+ * (`\begin{align}...\end{align}` at a line start); those are wrapped in `$$`,
+ * but only OUTSIDE existing `$$` blocks so environments nested inside real
+ * math (e.g. a pmatrix within an equation) are never double-wrapped.
+ *
  * Code spans/blocks are stashed first so we never rewrite delimiters that are
  * literal code. The `(?<!\\)` guards avoid mangling an escaped `\\[` (LaTeX
  * line break followed by a bracket).
  */
+const _BARE_ENV_RE =
+  /(^|\n)([ \t]*)(\\begin\{(align\*?|alignat\*?|aligned|alignedat|equation\*?|gather\*?|gathered|split|cases|dcases|CD)\}[\s\S]*?\\end\{\4\})/g;
+
 function normalizeMathDelimiters(text: string): string {
-  if (text.indexOf('\\[') === -1 && text.indexOf('\\(') === -1) {
+  if (
+    text.indexOf('\\[') === -1 &&
+    text.indexOf('\\(') === -1 &&
+    text.indexOf('\\begin{') === -1
+  ) {
     return text; // fast path: nothing to convert (e.g. all Claude output)
   }
 
@@ -46,6 +58,17 @@ function normalizeMathDelimiters(text: string): string {
     .replace(/(?<!\\)\\\]/g, '$$$$') // \] -> $$
     .replace(/(?<!\\)\\\(/g, '$') // \( -> $
     .replace(/(?<!\\)\\\)/g, '$'); // \) -> $
+
+  // Wrap bare display environments in $$, only in segments outside existing
+  // $$ math. Splitting on $$ alternates outside/inside segments.
+  const parts = t.split('$$');
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = parts[i].replace(
+      _BARE_ENV_RE,
+      (_m, lead, indent, block) => `${lead}${indent}$$\n${block}\n$$`
+    );
+  }
+  t = parts.join('$$');
 
   return t.replace(/\uE000(\d+)\uE000/g, (_, i) => stash[Number(i)]);
 }
