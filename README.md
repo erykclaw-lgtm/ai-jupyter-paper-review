@@ -60,7 +60,7 @@ cd ai-jupyter-paper-review
 `setup.sh` is idempotent and does everything in one shot:
 
 1. Installs the server + lab extension into the server's Python (`pip install -e .`).
-2. Installs the optional **openai-codex** SDK so GPT/Codex models work (cloned to `.codex-src/`). Without it, only Claude models appear.
+2. Installs the optional **openai-codex** SDK from PyPI so GPT/Codex models work. Without it, only Claude models appear.
 3. Installs JS deps and builds the frontend (`jlpm install && jlpm build`).
 4. Creates the **paper-review** kernel venv (NumPy, SciPy, Matplotlib, Pandas, scikit-learn, Seaborn, SymPy, JAX, transformers, and where available PyTorch).
 
@@ -76,8 +76,8 @@ The Paper Review panel will auto-open in the right sidebar.
 
 1. **Create a session** using the "+ New" button in the Sessions area
 2. **Send a paper URL** in the chat or use the **Prompts** menu for common actions:
-   - *Initialize Session* — fetch and begin reviewing a paper from URL
-   - *Deep Review* — produce a comprehensive pedagogical review notebook
+   - *Guided Walkthrough* — step-by-step review of one paper with math derivations, intuition, and code demos
+   - *Multi-Paper Survey* — synthesize several papers into one unified survey/review notebook
    - *Quick Summary* — shorter overview of a paper
    - *Search Related Work* — find related papers and resources
 3. **Watch Claude work** — the chat shows streaming text, tool usage indicators, and progress
@@ -142,11 +142,19 @@ The `jlpm watch` command runs both `tsc -w` (TypeScript compiler) and `jupyter l
 
 ### Models
 
-The extension supports multiple Claude models, selectable from the sidebar dropdown:
+Models are discovered dynamically and selectable from the sidebar dropdown — no
+hardcoded list to maintain:
 
-- Claude Opus 4.6
-- Claude Sonnet 4.6 (default)
-- Claude Haiku 4.5
+- **Claude** models come from the Anthropic models API (authenticated via the
+  Claude CLI's stored OAuth credentials), filtered to the latest release per
+  family (e.g. Opus, Sonnet, Fable, Haiku).
+- **GPT/Codex** models come from the openai-codex SDK, likewise filtered to the
+  latest per variant family (base, mini, codex, ...).
+
+New releases appear in the dropdown automatically (the backend caches discovery
+for 30 minutes and the panel refreshes every 15 minutes, or on tab return). If
+live discovery is unavailable (offline, expired credentials), a static fallback
+list is shown instead.
 
 ### System Prompt
 
