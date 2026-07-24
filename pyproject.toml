@@ -19,10 +19,9 @@ dependencies = [
     # (pure-Python, no native deps).
     "svglib>=1.5",
     "reportlab>=4.0",
-    # openai-codex is optional and not yet on PyPI — install manually:
-    #   git clone https://github.com/openai/codex
-    #   pip install -e codex/sdk/python
-    # The router gracefully falls back to Claude-only if it's missing.
+    # openai-codex is optional (GPT/Codex provider): pip install openai-codex
+    # (>=0.144, on PyPI). The router gracefully falls back to Claude-only if
+    # it's missing. setup.sh installs it automatically.
 ]
 
 [tool.hatch.build.targets.sdist]

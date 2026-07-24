@@ -10,12 +10,12 @@
 # What it does:
 #   1. Installs the server + lab extension into the miniforge Python
 #      (the same interpreter ./start.sh runs JupyterLab from).
-#   2. Installs the optional openai-codex SDK so GPT/Codex models work
-#      (cloned to .codex-src/ if not already importable).
+#   2. Installs the optional openai-codex SDK from PyPI so GPT/Codex models
+#      work.
 #   3. Installs JS deps and builds the frontend.
 #   4. Creates the "paper-review" kernel venv (./create_kernel.sh).
 #
-# Requirements: git, and either miniforge or a python3 on PATH.
+# Requirements: either miniforge or a python3 on PATH.
 
 set -euo pipefail
 
@@ -52,17 +52,9 @@ echo ""
 
 # ── 2. openai-codex SDK (optional GPT/Codex provider) ──────────────────────
 echo "[2/4] Setting up the Codex SDK (GPT models)..."
-if "$PYTHON" -c "import openai_codex" 2>/dev/null; then
-  echo "      [skip] openai-codex already importable."
-else
-  CODEX_SRC="$SCRIPT_DIR/.codex-src"
-  if [ ! -d "$CODEX_SRC/.git" ]; then
-    echo "      Cloning openai/codex into .codex-src/ ..."
-    git clone --depth 1 https://github.com/openai/codex.git "$CODEX_SRC"
-  fi
-  echo "      Installing openai-codex (editable)..."
-  "$PYTHON" -m pip install -q -e "$CODEX_SRC/sdk/python"
-fi
+# openai-codex is published on PyPI (>=0.144) with a matched cli-bin — no
+# more git clone needed.
+"$PYTHON" -m pip install -q --upgrade "openai-codex>=0.144"
 # Verify so a broken install fails loudly here, not at runtime as an HTTP 409.
 if "$PYTHON" -c "import openai_codex" 2>/dev/null; then
   echo "      Codex SDK ready."

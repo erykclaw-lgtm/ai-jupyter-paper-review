@@ -18,22 +18,25 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 
 try:
+    # openai-codex >= 0.144 (PyPI release): AppServerConfig was renamed to
+    # CodexConfig and AppServerError was folded into the CodexError hierarchy
+    # (TransportClosedError subclasses it).
     from openai_codex import (
-        AppServerConfig,
         AsyncCodex,
         AsyncThread,
         AsyncTurnHandle,
+        CodexConfig,
         LocalImageInput,
         TextInput,
     )
-    from openai_codex.errors import AppServerError, TransportClosedError
-    from openai_codex.generated.v2_all import SandboxMode
+    from openai_codex import Sandbox
+    from openai_codex.errors import CodexError, TransportClosedError
     CODEX_AVAILABLE = True
 except ImportError:
     CODEX_AVAILABLE = False
-    AppServerConfig = None  # type: ignore
+    CodexConfig = None  # type: ignore
     AsyncCodex = None  # type: ignore
-    SandboxMode = None  # type: ignore
+    Sandbox = None  # type: ignore
 
 # Reuse storage primitives + session model from claude_bridge so both
 # providers read/write the same on-disk format.
@@ -160,7 +163,7 @@ class CodexBridge:
                 return self._models_cache
 
             try:
-                async with AsyncCodex(config=AppServerConfig()) as codex:
+                async with AsyncCodex(config=CodexConfig()) as codex:
                     result = await codex.models(include_hidden=False)
                 models = []
                 for m in result.data:
@@ -243,7 +246,7 @@ class CodexBridge:
         _debug(f"  Creating Codex client for session {sid} (model={session.model})")
         # Run the codex subprocess rooted at reviews_dir so its file ops can't
         # escape the workspace (defense in depth alongside sandbox mode).
-        codex = AsyncCodex(config=AppServerConfig(cwd=self.reviews_dir))
+        codex = AsyncCodex(config=CodexConfig(cwd=self.reviews_dir))
         await codex.__aenter__()
 
         # Build thread-start kwargs. The system prompt goes into
@@ -255,8 +258,8 @@ class CodexBridge:
             "cwd": self.reviews_dir,
             "developer_instructions": self._build_system_prompt(session),
         }
-        if SandboxMode is not None:
-            start_kwargs["sandbox"] = SandboxMode.workspace_write
+        if Sandbox is not None:
+            start_kwargs["sandbox"] = Sandbox.workspace_write
 
         try:
             if session.codex_thread_id:
@@ -509,7 +512,7 @@ class CodexBridge:
                     pass
             await stream.put({"type": "done", "partial": True})
 
-        except (AppServerError, TransportClosedError) as e:
+        except (CodexError, TransportClosedError) as e:
             _debug(f"  Codex SDK error: {type(e).__name__}: {e}")
             try:
                 sess = self.get_session(session_id)
