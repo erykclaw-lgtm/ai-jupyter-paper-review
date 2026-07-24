@@ -35,7 +35,9 @@ Create a Jupyter notebook that walks through the paper step by step. For each se
 
 Keep all visualizations inline in the notebook — use plt.show() or display(), never write separate .png/.svg/.pdf image files.
 
-No exercises needed — focus purely on building deep understanding. Be thorough and long-form; think tutorial-length lecture notes, not a summary.`,
+No exercises needed — focus purely on building deep understanding. Be thorough and long-form; think tutorial-length lecture notes, not a summary.
+
+Before returning: execute every cell of the notebook top-to-bottom in a fresh kernel and confirm they all run without errors. Fix any cell that fails and re-run until the entire notebook runs clean end to end. Do not hand the notebook back to me until every cell executes successfully.`,
   },
   {
     id: 'multi-paper-survey',
@@ -56,7 +58,9 @@ Fetch each paper (use WebFetch and web search) and produce a SINGLE Jupyter note
 - **Code**: Annotated PyTorch snippets that illustrate and contrast the key mechanisms, with inline comments mapping math notation to code variables.
 - **Synthesis & open problems**: Pull the threads together — the unified takeaway, what remains unresolved, and what to read or build next.
 
-Use web search to fill gaps — related work, follow-ups, blog posts, community discussion, errata. Keep all visualizations inline in the notebook — use plt.show() or display(), never write separate .png/.svg/.pdf image files. Be thorough and long-form — think a survey-length pedagogical review, not a summary.`,
+Use web search to fill gaps — related work, follow-ups, blog posts, community discussion, errata. Keep all visualizations inline in the notebook — use plt.show() or display(), never write separate .png/.svg/.pdf image files. Be thorough and long-form — think a survey-length pedagogical review, not a summary.
+
+Before returning: execute every cell of the notebook top-to-bottom in a fresh kernel and confirm they all run without errors. Fix any cell that fails and re-run until the entire notebook runs clean end to end. Do not hand the notebook back to me until every cell executes successfully.`,
   },
 ];
 
