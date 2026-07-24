@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -355,17 +356,22 @@ class ClaudeBridge:
     # Used when live discovery fails (no creds, offline, non-macOS without a
     # credentials file, token expired). Kept current as a sensible default.
     _FALLBACK_MODELS = [
+        {"id": "claude-sonnet-5", "name": "Claude Sonnet 5", "tier": "sonnet"},
+        {"id": "claude-fable-5", "name": "Claude Fable 5", "tier": "fable"},
         {"id": "claude-opus-4-8", "name": "Claude Opus 4.8", "tier": "opus"},
-        {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "tier": "sonnet"},
         {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5", "tier": "haiku"},
     ]
 
     @staticmethod
     def _model_tier(model_id: str) -> str:
-        for tier in ("opus", "sonnet", "haiku"):
-            if tier in model_id:
-                return tier
-        return "claude"
+        """Extract the family name from a Claude model id.
+
+        Generic — ``claude-opus-4-8`` -> "opus", ``claude-fable-5`` -> "fable",
+        so newly introduced families (fable, etc.) are recognized without a
+        hardcoded list.
+        """
+        m = re.match(r"claude-([a-z]+)", model_id)
+        return m.group(1) if m else "claude"
 
     @staticmethod
     def _read_oauth_token() -> str | None:
@@ -409,17 +415,37 @@ class ClaudeBridge:
 
         return None
 
-    def _fetch_models_sync(self) -> list[dict]:
-        """Blocking fetch of the live Claude model list. Runs in an executor."""
+    def _refresh_oauth_via_cli(self) -> None:
+        """Force the claude CLI to refresh its stored OAuth token.
+
+        The CLI transparently refreshes the access token (and rewrites the
+        keychain / credentials file) whenever it runs an authenticated call.
+        Our direct REST reads don't trigger that, so a long-idle server can
+        hold an expired token. Running one minimal haiku call is the
+        supported way to refresh; it costs a fraction of a cent and only
+        happens on the rare 401 path.
+        """
+        import subprocess
+
+        cli = self._find_claude_cli()
+        if not cli:
+            return
+        try:
+            subprocess.run(
+                [cli, "--model", "haiku", "--print", "ok"],
+                capture_output=True, timeout=60,
+                stdin=subprocess.DEVNULL,
+            )
+            _debug("  Triggered CLI token refresh")
+        except Exception as e:
+            _debug(f"  CLI token refresh failed: {e}")
+
+    def _models_request(self, token: str):
+        """Build the /v1/models request for *token*."""
         import urllib.request
 
-        token = self._read_oauth_token()
-        if not token:
-            _debug("  No OAuth token found — using fallback model list")
-            return list(self._FALLBACK_MODELS)
-
         base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
-        req = urllib.request.Request(
+        return urllib.request.Request(
             f"{base}/v1/models?limit=100",
             headers={
                 "authorization": f"Bearer {token}",
@@ -428,12 +454,36 @@ class ClaudeBridge:
                 "anthropic-beta": "oauth-2025-04-20",
             },
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+
+    def _fetch_models_sync(self) -> list[dict]:
+        """Blocking fetch of the live Claude model list. Runs in an executor."""
+        import urllib.error
+        import urllib.request
+
+        token = self._read_oauth_token()
+        if not token:
+            _debug("  No OAuth token found — using fallback model list")
+            return list(self._FALLBACK_MODELS)
+
+        try:
+            with urllib.request.urlopen(self._models_request(token), timeout=10) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code != 401:
+                raise
+            # Expired access token — have the CLI refresh it, then retry once.
+            _debug("  Models API returned 401 (token expired) — refreshing via CLI")
+            self._refresh_oauth_via_cli()
+            token = self._read_oauth_token()
+            if not token:
+                return list(self._FALLBACK_MODELS)
+            with urllib.request.urlopen(self._models_request(token), timeout=10) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
 
         # API returns newest-first. Keep only the latest model per family
-        # (Opus/Sonnet/Haiku) so the dropdown stays clean while remaining
-        # dynamic — a future opus-4-9 transparently replaces 4.8 here.
+        # (opus/sonnet/haiku/fable/...) so the dropdown stays clean while
+        # remaining dynamic — a future opus-4-9 transparently replaces 4.8,
+        # and newly introduced families (e.g. fable) appear automatically.
         seen_tiers: set[str] = set()
         models = []
         for m in payload.get("data", []):
@@ -441,10 +491,9 @@ class ClaudeBridge:
             if not mid:
                 continue
             tier = self._model_tier(mid)
-            if tier in ("opus", "sonnet", "haiku"):
-                if tier in seen_tiers:
-                    continue
-                seen_tiers.add(tier)
+            if tier in seen_tiers:
+                continue
+            seen_tiers.add(tier)
             models.append({
                 "id": mid,
                 "name": m.get("display_name") or mid,
