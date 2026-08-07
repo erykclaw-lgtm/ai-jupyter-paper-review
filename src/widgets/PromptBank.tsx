@@ -32,8 +32,9 @@ Create a Jupyter notebook that walks through the paper step by step. For each se
 - **Intuition**: Explain the reasoning and motivation behind each design choice in detail — why did the authors do it this way? What's the geometric, statistical, or information-theoretic intuition?
 - **Code**: Where helpful, include annotated PyTorch code blocks that demonstrate how a mechanism works, with inline comments mapping math notation to code variables.
 - **Resources**: Explain all referenced resources, supplementary materials, and prior work, and tie them together with the main contributions. Use web search to gather additional context — related blog posts, follow-up work, community discussion, or errata.
+- **Figures**: When a figure from the paper itself (architecture diagram, key results plot, illustrative schematic) explains something better than prose would, extract it directly from the source — the arXiv HTML/PDF or the paper's repo — save it under artifacts/<slug>/, and embed it in the notebook via a relative path with a caption crediting the paper (e.g. "Figure 2 from the paper"). Prefer the authors' own figures for architectures and empirical results; use them alongside your own demos, not instead of them.
 
-Keep all visualizations inline in the notebook — use plt.show() or display(), never write separate .png/.svg/.pdf image files.
+For visualizations you generate yourself, keep them inline — use plt.show() or display(), never write separate .png/.svg/.pdf image files (extracted source figures in artifacts/<slug>/ are the one exception).
 
 No exercises needed — focus purely on building deep understanding. Be thorough and long-form; think tutorial-length lecture notes, not a summary.
 
@@ -56,9 +57,10 @@ Fetch each paper (use WebFetch and web search) and produce a SINGLE Jupyter note
 - **Comparison tables**: Summarize the papers along the axes that matter — method, assumptions, complexity, datasets, results, trade-offs.
 - **Evolution & relationships**: How do these papers build on, contradict, or complement each other? Trace the intellectual lineage and where the field is heading.
 - **Code**: Annotated PyTorch snippets that illustrate and contrast the key mechanisms, with inline comments mapping math notation to code variables.
+- **Figures**: When a figure from one of the papers (architecture diagram, key results plot, illustrative schematic) explains something better than prose would, extract it directly from the source — the arXiv HTML/PDF or the paper's repo — save it under artifacts/<slug>/, and embed it in the notebook via a relative path with a caption crediting the paper it came from. Side-by-side source figures are especially valuable when comparing how different papers approach the same problem. Use them alongside your own demos, not instead of them.
 - **Synthesis & open problems**: Pull the threads together — the unified takeaway, what remains unresolved, and what to read or build next.
 
-Use web search to fill gaps — related work, follow-ups, blog posts, community discussion, errata. Keep all visualizations inline in the notebook — use plt.show() or display(), never write separate .png/.svg/.pdf image files. Be thorough and long-form — think a survey-length pedagogical review, not a summary.
+Use web search to fill gaps — related work, follow-ups, blog posts, community discussion, errata. For visualizations you generate yourself, keep them inline — use plt.show() or display(), never write separate .png/.svg/.pdf image files (extracted source figures in artifacts/<slug>/ are the one exception). Be thorough and long-form — think a survey-length pedagogical review, not a summary.
 
 Before returning: execute every cell of the notebook top-to-bottom in a fresh kernel and confirm they all run without errors. Fix any cell that fails and re-run until the entire notebook runs clean end to end. Do not hand the notebook back to me until every cell executes successfully.`,
   },
