@@ -38,3 +38,7 @@ Thumbs.db
 .yarn/install-state.gz
 .pnp.*
 
+
+# Remote/vacation mode (local secrets + logs)
+remote/.remote-token
+remote/logs/
