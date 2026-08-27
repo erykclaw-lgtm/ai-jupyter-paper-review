@@ -28,32 +28,43 @@ This does three things that matter when nobody is at the keyboard:
 
 No sudo needed — it's a per-user LaunchAgent. Logs land in `remote/logs/`.
 
-## 2. Tailscale (needs you — sudo + an account)
+## 2. Tailscale
 
-On the **Mac**:
+Installed and connected on the Mac. This tailnet is `erykclaw@gmail.com`, and
+this machine is **macbook-pro-2** (`100.64.245.108`).
 
-```bash
-brew install --cask tailscale
-```
-
-Then open Tailscale, sign in, and connect. Once connected, publish the app to
-your private network only:
+The app is published to the tailnet with:
 
 ```bash
-tailscale serve --bg 8888
-tailscale serve status     # shows your https://<machine>.<tailnet>.ts.net URL
+tailscale serve --bg --http=80 8888
+tailscale serve status      # show what's published
+tailscale serve --http=80 off   # stop publishing
 ```
 
-On the **iPad**: install Tailscale from the App Store, sign in with the same
-account, toggle it on, then open:
+Two implementation notes:
+
+- **Plain HTTP, on purpose.** TLS certs are disabled on this tailnet
+  ("your Tailscale account does not support getting TLS certs"), which makes
+  the default `tailscale serve --bg 8888` hang. `--http=80` avoids certs
+  entirely; traffic is still encrypted end-to-end by WireGuard inside the
+  tunnel. To switch to `https://`, enable HTTPS Certificates under
+  **DNS** in the Tailscale admin console, then re-run without `--http=80`.
+- **Host allowlisting.** Jupyter blocks requests whose `Host` header isn't
+  local (DNS-rebinding protection), which is exactly what the proxy sends.
+  `setup-remote.sh` detects the tailnet name and passes it via
+  `--ServerApp.local_hostnames`, so the check stays on for every other host.
+
+### The iPad URL
+
+Install Tailscale from the App Store, sign in with the **same** account
+(`erykclaw@gmail.com`), toggle it on, then open:
 
 ```
-https://<machine>.<tailnet>.ts.net/lab?token=<your-token>
+http://macbook-pro-2.tail0b9f18.ts.net/lab?token=<token>
 ```
 
-Get `<your-token>` from `./remote/setup-remote.sh --status`. Bookmark that full
-URL — it stays valid across restarts now. Add it to your iPad Home Screen for
-an app-like window.
+Get `<token>` from `./remote/setup-remote.sh --status`. Bookmark the full URL —
+it survives restarts. Add to Home Screen for an app-like window.
 
 ## 3. Before you walk out the door
 

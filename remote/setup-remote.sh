@@ -92,9 +92,9 @@ if [ ! -f "$TOKEN_FILE" ]; then
   mkdir -p "$(dirname "$TOKEN_FILE")"
   "$PYTHON" -c "import secrets; print(secrets.token_hex(24))" > "$TOKEN_FILE"
   chmod 600 "$TOKEN_FILE"
-  echo "[1/3] Generated a stable access token."
+  echo "[1/4] Generated a stable access token."
 else
-  echo "[1/3] Reusing existing stable token."
+  echo "[1/4] Reusing existing stable token."
 fi
 TOKEN="$(cat "$TOKEN_FILE")"
 
@@ -103,7 +103,22 @@ tmux kill-session -t paper-review 2>/dev/null || true
 pkill -f jupyter-lab 2>/dev/null || true
 sleep 1
 
-# ── 3. launchd agent: keep-alive + caffeinate ─────────────────────────────
+# ── 3. Allowlist the tailnet hostname ─────────────────────────────────────
+# Jupyter blocks requests whose Host header isn't local (DNS-rebinding
+# protection), which is exactly what `tailscale serve` produces. Add the
+# tailnet names to local_hostnames rather than disabling the check wholesale.
+TS_BIN="$(command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale)"
+HOSTS="'localhost','127.0.0.1'"
+if [ -x "$TS_BIN" ]; then
+  TS_FQDN="$("$TS_BIN" status --json 2>/dev/null \
+    | "$PYTHON" -c "import sys,json; print((json.load(sys.stdin).get('Self') or {}).get('DNSName','').rstrip('.'))" 2>/dev/null || true)"
+  if [ -n "$TS_FQDN" ]; then
+    HOSTS="$HOSTS,'$TS_FQDN','${TS_FQDN%%.*}'"
+    echo "      Allowlisting tailnet host: $TS_FQDN"
+  fi
+fi
+
+# ── 4. launchd agent: keep-alive + caffeinate ─────────────────────────────
 mkdir -p "$LOG_DIR" "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -117,6 +132,7 @@ cat > "$PLIST" <<PLIST_EOF
     <string>/usr/bin/caffeinate</string>
     <string>-is</string>
     <string>$JUPYTER</string>
+    <string>--ServerApp.local_hostnames=[$HOSTS]</string>
   </array>
   <key>WorkingDirectory</key><string>$SCRIPT_DIR</string>
   <key>EnvironmentVariables</key>
@@ -135,13 +151,13 @@ PLIST_EOF
 
 launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
-echo "[2/3] launchd agent installed (auto-restart + survives reboot)."
+echo "[3/4] launchd agent installed (auto-restart + survives reboot)."
 
 # ── 4. Wait for it to come up ─────────────────────────────────────────────
 for _ in $(seq 1 40); do
   curl -s -o /dev/null "http://127.0.0.1:8888/api/status?token=$TOKEN" && break
   sleep 1
 done
-echo "[3/3] Server is up."
+echo "[4/4] Server is up."
 echo ""
 show_status
